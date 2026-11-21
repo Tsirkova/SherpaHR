@@ -9,9 +9,15 @@
 </header>
 <div class="shell">
   <nav class="sidebar" aria-label="Проекты">
+    @if (attention()?.projects?.length) {
+      <button class="project-link attention-link" [class.selected]="view() === 'attention'" [attr.aria-current]="view() === 'attention' ? 'page' : null" (click)="openAttention()">
+        <span class="project-icon">⚑</span><span>Требует внимания<small>Ваших активных проектов: {{attention()!.projects.length}}</small></span>
+        @if (attentionCount()) { <span class="count" aria-label="Задач требует внимания">{{attentionCount()}}</span> }
+      </button>
+    }
     <div class="nav-heading">Ваши проекты <span>{{projects().length}}</span></div>
     @for (p of projects(); track p.id) {
-      <button class="project-link" [class.selected]="project()?.id === p.id" [attr.aria-current]="project()?.id === p.id ? 'page' : null" (click)="selectProject(p)">
+      <button class="project-link" [class.selected]="view() === 'project' && project()?.id === p.id" [attr.aria-current]="view() === 'project' && project()?.id === p.id ? 'page' : null" (click)="selectProject(p)">
         <span class="project-icon">{{p.archived ? '▤' : '▧'}}</span><span>{{p.name}}<small>{{p.archived ? 'Архив' : p.task_count + ' задач'}}</small></span>
       </button>
     }
@@ -20,7 +26,47 @@
   <main>
     @if (error()) { <div role="alert" class="alert error">{{error()}}</div> }
     @if (notice()) { <div role="status" class="alert success">{{notice()}}</div> }
-    @if (project(); as p) {
+    @if (view() === 'attention' && attention(); as digest) {
+      <div class="breadcrumb">Обзор <span>/</span> Проекты под вашим руководством</div>
+      <div class="page-heading"><div><h1>Требует внимания</h1>
+        <p>Задачи всех исполнителей из {{digest.projects.length}} активных проектов, отсортированы по срочности. Данные на {{digest.generated_at | date:'dd.MM.yyyy HH:mm':'UTC'}} UTC.</p></div>
+        <button (click)="refreshAttention()" [disabled]="saving()">↻ Обновить</button>
+      </div>
+      <div class="chips" role="group" aria-label="Фильтр по проекту">
+        <button class="chip" [class.selected]="attentionFilter() === null" [attr.aria-pressed]="attentionFilter() === null" (click)="attentionFilter.set(null)">Все проекты <span>{{attentionCount()}}</span></button>
+        @for (ap of digest.projects; track ap.id) {
+          <button class="chip" [class.selected]="attentionFilter() === ap.id" [attr.aria-pressed]="attentionFilter() === ap.id" (click)="attentionFilter.set(ap.id)">{{ap.name}} <span [class.hot]="ap.critical">{{ap.items}}</span></button>
+        }
+      </div>
+      <section class="attention-list" aria-label="Задачи, требующие внимания">
+        @for (item of attentionItems(); track item.task.id) {
+          <article class="attention-card" [class]="'attention-card ' + reasonClass(item)" [class.acknowledged]="item.acknowledged" [class.open]="detail()?.id === item.task.id">
+            <div class="reasons">@for (r of item.reasons; track r.code) { <span class="reason" [class]="'reason ' + r.severity">{{r.label}}</span> }
+              @if (item.acknowledged) { <span class="reason info">Разобрано</span> }</div>
+            <h3><button class="task-title" (click)="openFromAttention(item)"><span class="task-number">#{{item.task.id}}</span>{{item.task.title}}</button></h3>
+            <div class="card-meta"><span>{{item.project_name}}</span><span>{{item.assignee_name ?? 'Не назначен'}}</span><span class="badge" [class]="'badge ' + item.task.status">{{statusLabel(item.task.status)}}</span>
+              <span>{{item.task.due_at ? 'Срок ' + (item.task.due_at | date:'dd.MM HH:mm':'UTC') : 'Без срока'}}</span></div>
+            @if (item.quote; as c) {
+              <blockquote [class.request]="c.is_request"><span class="quote-kind">{{c.is_request ? 'Просьба без вашего ответа' : 'Последний комментарий'}}</span>
+                <strong>{{c.author}}</strong> · <time>{{c.created_at | date:'dd.MM HH:mm':'UTC'}}</time><p>{{c.body}}</p>
+                @if (item.comment_count > 1) { <small>Ещё комментариев: {{item.comment_count - 1}}</small> }</blockquote>
+            }
+            <div class="card-actions">
+              <button class="primary" (click)="openFromAttention(item)">Разобраться</button>
+              <button (click)="openFromAttention(item, true)">Ответить</button>
+              <button (click)="acknowledge(item)" [disabled]="saving()" [title]="item.acknowledged ? 'Вернуть в список' : 'Скрыть до новых изменений в задаче'">{{item.acknowledged ? 'Вернуть' : '✓ Разобрано'}}</button>
+            </div>
+          </article>
+        } @empty {
+          <div class="empty">Сейчас ничего не требует вашего вмешательства.</div>
+        }
+      </section>
+      <div class="attention-footer">
+        @if (digest.hidden_count) { <button class="link" (click)="toggleHidden()">{{showHidden() ? 'Скрыть разобранные' : 'Показать разобранные (' + digest.hidden_count + ')'}}</button> }
+        <p class="footnote">Сигналы: просрочка, срок в ближайшие {{digest.rules.due_soon_hours}} ч, блокировка, нет исполнителя, нет движения {{digest.rules.stale_days}}+ дня в работе,
+          и просьба о помощи в обсуждении, на которую вы ещё не ответили (поиск по ключевым словам и упоминанию вашего имени). «Разобрано» скрывает задачу, пока в ней не появятся изменения или комментарии.</p>
+      </div>
+    } @else if (project(); as p) {
       <div class="breadcrumb">Проекты <span>/</span> {{p.archived ? 'Архив' : 'Рабочее пространство'}}</div>
       <div class="page-heading"><div><h1>{{p.name}}</h1><p>{{p.description}}</p></div>
         @if (!p.archived) { <button class="primary" (click)="createTask()" [disabled]="loading() || saving()">＋ Новая задача</button> }
@@ -49,20 +95,21 @@
     <aside class="detail" aria-label="Карточка задачи">
       <div class="drawer-heading"><span>{{creating() ? 'Новая задача' : 'Задача #' + detail()?.id}}</span><button aria-label="Закрыть карточку" (click)="closeDetail()">✕</button></div>
       <form (ngSubmit)="saveTask()">
-        <fieldset [disabled]="project()?.archived || saving()">
+        @if (!creating() && detailProject(); as dp) { <p class="drawer-project">{{dp.name}}</p> }
+        <fieldset [disabled]="detailProject()?.archived || saving()">
           <label>Название<input name="title" [(ngModel)]="draft.title" required maxlength="200"></label>
           <label>Описание<textarea name="description" [(ngModel)]="draft.description" rows="4" maxlength="5000"></textarea></label>
           <div class="form-row"><label>Статус<select name="status" aria-label="Статус" [(ngModel)]="draft.status">@for (s of statuses; track s.value) { <option [value]="s.value">{{s.label}}</option> }</select></label>
-          <label>Исполнитель<select name="assignee" aria-label="Исполнитель" [(ngModel)]="draft.assignee_id"><option [ngValue]="null">Не назначен</option>@for (u of project()?.members; track u.id) { <option [ngValue]="u.id">{{u.name}}</option> }</select></label></div>
+          <label>Исполнитель<select name="assignee" aria-label="Исполнитель" [(ngModel)]="draft.assignee_id"><option [ngValue]="null">Не назначен</option>@for (u of detailProject()?.members; track u.id) { <option [ngValue]="u.id">{{u.name}}</option> }</select></label></div>
           <label>Срок (UTC)<input type="datetime-local" name="due" [(ngModel)]="draft.due_at"></label>
-          @if (!project()?.archived) { <button type="submit" class="primary" [disabled]="!draft.title.trim()">{{saving() ? 'Сохраняем…' : 'Сохранить задачу'}}</button> }
+          @if (!detailProject()?.archived) { <button type="submit" class="primary" [disabled]="!draft.title.trim()">{{saving() ? 'Сохраняем…' : 'Сохранить задачу'}}</button> }
         </fieldset>
       </form>
       @if (detail(); as task) {
         <section class="comments"><h2>Обсуждение <span>{{task.comments.length}}</span></h2>
-          @for (c of task.comments; track c.id) { <article><strong>{{c.author}}</strong><time>{{c.created_at | date:'dd.MM.yyyy HH:mm':'UTC'}}</time><p>{{c.body}}</p></article> }
+          @for (c of task.comments; track c.id) { <article [class.flagged]="c.id === flaggedComment()"><strong>{{c.author}}</strong><time>{{c.created_at | date:'dd.MM.yyyy HH:mm':'UTC'}}</time><p>{{c.body}}</p></article> }
           @empty { <p class="muted">Комментариев пока нет.</p> }
-          @if (!project()?.archived) { <form (ngSubmit)="addComment()"><label>Комментарий<textarea name="comment" [(ngModel)]="comment" rows="3" required maxlength="2000" [disabled]="saving()"></textarea></label><button type="submit" [disabled]="!comment.trim() || saving()">Добавить комментарий</button></form> }
+          @if (!detailProject()?.archived) { <form (ngSubmit)="addComment()"><label>Комментарий<textarea id="comment-input" name="comment" [(ngModel)]="comment" rows="3" required maxlength="2000" [disabled]="saving()"></textarea></label><button type="submit" [disabled]="!comment.trim() || saving()">Добавить комментарий</button></form> }
         </section>
       }
     </aside>

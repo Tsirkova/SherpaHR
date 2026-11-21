@@ -24,16 +24,30 @@ final class Database
         $db->exec('BEGIN IMMEDIATE');
         try {
             $db->exec('CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
-            if ($db->query("SELECT value FROM metadata WHERE key = 'schema_version'")->fetchColumn()) {
-                $db->exec('COMMIT');
-                return;
+            if (!$db->query("SELECT value FROM metadata WHERE key = 'schema_version'")->fetchColumn()) {
+                $db->exec(file_get_contents(__DIR__ . '/../schema.sql'));
+                self::seed($db);
             }
-            $db->exec(file_get_contents(__DIR__ . '/../schema.sql'));
-            self::seed($db);
+            self::migrate($db);
             $db->exec('COMMIT');
         } catch (Throwable $error) {
             $db->exec('ROLLBACK');
             throw $error;
+        }
+    }
+
+    /** Additive migrations keep existing Compose volumes and their user data. */
+    private static function migrate(PDO $db): void
+    {
+        $version = (int) $db->query("SELECT value FROM metadata WHERE key = 'schema_version'")->fetchColumn();
+        if ($version < 2) {
+            $db->exec('CREATE TABLE IF NOT EXISTS attention_acks (
+                user_id INTEGER NOT NULL REFERENCES users(id),
+                task_id INTEGER NOT NULL REFERENCES tasks(id),
+                acked_version INTEGER NOT NULL, acked_comment_id INTEGER NOT NULL,
+                acked_at TEXT NOT NULL, PRIMARY KEY (user_id, task_id)
+            )');
+            $db->exec("UPDATE metadata SET value = '2' WHERE key = 'schema_version'");
         }
     }
 
