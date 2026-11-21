@@ -61,7 +61,7 @@ final class Application
         if (preg_match('#^/api/projects/(\d+)/tasks$#', $path, $match)) {
             $project = $this->project((int) $match[1]);
             if ($method === 'GET') {
-                $this->respond($this->all('SELECT t.* FROM tasks t JOIN users u ON u.id=t.assignee_id WHERE t.project_id=? ORDER BY t.id', [$project['id']]));
+                $this->respond($this->all('SELECT t.* FROM tasks t WHERE t.project_id=? ORDER BY t.id', [$project['id']]));
                 return;
             }
             if ($method === 'POST') {
@@ -102,8 +102,38 @@ final class Application
             $task = $this->task((int) $match[1]);
             $this->writable($this->project($task['project_id']));
             $data = $this->input();
-            $this->text($data['body'] ?? null, 'Комментарий', 5000, true);
-            throw new ApiError('Добавление комментариев пока не реализовано', 501);
+            $unknown = array_diff(array_keys($data), ['body']);
+            if ($unknown) {
+                throw new ApiError('Неизвестные поля комментария', 422);
+            }
+            $body = $this->text($data['body'] ?? null, 'Комментарий', 5000, true);
+            $stmt = $this->db->prepare('INSERT INTO comments (task_id,user_id,body,created_at) VALUES (?,?,?,?)');
+            $stmt->execute([$task['id'], $this->userId, $body, gmdate('Y-m-d\TH:i:s\Z')]);
+            $this->respond($this->one('SELECT c.*, u.name AS author FROM comments c JOIN users u ON u.id=c.user_id WHERE c.id=?', [(int) $this->db->lastInsertId()]), 201);
+            return;
+        }
+        if ($method === 'GET' && $path === '/api/attention') {
+            $includeHidden = ($_GET['include_hidden'] ?? '') === '1';
+            $this->respond((new Attention($this->db, $this->userId))->digest(new DateTimeImmutable('now', new DateTimeZone('UTC')), $includeHidden));
+            return;
+        }
+        if (preg_match('#^/api/attention/(\d+)/ack$#', $path, $match) && in_array($method, ['POST', 'DELETE'], true)) {
+            $task = $this->task((int) $match[1]);
+            $project = $this->project($task['project_id']);
+            $this->writable($project);
+            if ((int) $project['owner_id'] !== $this->userId) {
+                throw new ApiError('Разбирать сигналы может только руководитель проекта', 403);
+            }
+            if ($method === 'POST') {
+                $lastComment = (int) $this->db->query('SELECT COALESCE(MAX(id), 0) FROM comments WHERE task_id=' . (int) $task['id'])->fetchColumn();
+                $stmt = $this->db->prepare('INSERT INTO attention_acks (user_id,task_id,acked_version,acked_comment_id,acked_at) VALUES (?,?,?,?,?)
+                    ON CONFLICT(user_id,task_id) DO UPDATE SET acked_version=excluded.acked_version, acked_comment_id=excluded.acked_comment_id, acked_at=excluded.acked_at');
+                $stmt->execute([$this->userId, $task['id'], $task['version'], $lastComment, gmdate('Y-m-d\TH:i:s\Z')]);
+            } else {
+                $this->db->prepare('DELETE FROM attention_acks WHERE user_id=? AND task_id=?')->execute([$this->userId, $task['id']]);
+            }
+            $this->respond(['task_id' => $task['id'], 'acknowledged' => $method === 'POST']);
+            return;
         }
         throw new ApiError('Маршрут не найден', 404);
     }

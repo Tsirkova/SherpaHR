@@ -5,6 +5,7 @@ $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 if (str_starts_with($path, '/api')) {
     require __DIR__ . '/src/Database.php';
     require __DIR__ . '/src/Application.php';
+    require __DIR__ . '/src/Attention.php';
     (new Application(Database::connect()))->run();
     return;
 }

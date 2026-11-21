@@ -113,6 +113,51 @@ try {
     check(count($response['data']) === 6, 'initialization does not duplicate or reset data');
     check(request('GET', '/api/tasks/9999')[0] === 404, 'missing task returns 404');
     check(request('GET', '/api/unknown')[0] === 404, 'unknown route returns 404');
+    check(request('POST', '/api/tasks/1/comments', ['body' => 'x', 'user_id' => 3])[0] === 422, 'comment rejects extra fields');
+    [$status, $response] = request('GET', '/api/projects/2/tasks');
+    check(in_array(7, array_column($response['data'], 'id'), true), 'unassigned task is listed in its project');
+
+    // Attention digest: the manager's cross-project view.
+    $ids = fn(array $digest) => array_column(array_column($digest['items'], 'task'), 'id');
+    $codes = function (array $digest, int $taskId): array {
+        foreach ($digest['items'] as $item) {
+            if ($item['task']['id'] === $taskId) {
+                return array_column($item['reasons'], 'code');
+            }
+        }
+        return [];
+    };
+    [$status, $response] = request('GET', '/api/attention');
+    $digest = $response['data'];
+    check($status === 200 && array_column($digest['projects'], 'id') === [1, 2, 3], 'digest covers only active projects the manager leads');
+    check(!array_intersect($ids($digest), [3, 9, 10, 11]), 'digest skips done, archived and foreign tasks');
+    check(!array_diff([1, 2, 5, 7], $ids($digest)),'digest lists blocked, overdue and unassigned tasks');
+    check(in_array('blocked', $codes($digest, 1), true) && in_array('waiting_manager', $codes($digest, 1), true), 'help request in discussion is detected');
+    check(!array_diff(['blocked', 'overdue', 'waiting_manager'], $codes($digest, 5)), 'several reasons are combined');
+    check(!array_diff(['unassigned', 'waiting_manager'], $codes($digest, 7)), 'mention of the manager by name is detected');
+    check(!in_array('waiting_manager', $codes($digest, 8), true), 'negated phrase "препятствий нет" is not a request');
+    $scores = array_column($digest['items'], 'score');
+    $sorted = $scores;
+    rsort($sorted);
+    check($scores === $sorted, 'digest is ordered by urgency');
+    check(request('GET', '/api/attention', null, 2)[1]['data']['items'] === [], 'member without led projects gets empty digest');
+    check($ids(request('GET', '/api/attention', null, 3)[1]['data']) === [11], 'each manager sees only own projects');
+
+    check(request('POST', '/api/tasks/1/comments', ['body' => 'Выбираем первый формат, детали ниже.'])[0] === 201, 'manager replies in discussion');
+    check(!in_array('waiting_manager', $codes(request('GET', '/api/attention')[1]['data'], 1), true), 'manager reply clears waiting signal');
+
+    check(request('POST', '/api/attention/7/ack', [], 2)[0] === 403, 'only project lead can acknowledge');
+    check(request('POST', '/api/attention/10/ack', [])[0] === 409, 'archived task cannot be acknowledged');
+    check(request('POST', '/api/attention/11/ack', [])[0] === 404, 'foreign task cannot be acknowledged');
+    check(request('POST', '/api/attention/7/ack', [])[0] === 200, 'manager acknowledges a task');
+    [$status, $response] = request('GET', '/api/attention');
+    check(!in_array(7, $ids($response['data']), true) && $response['data']['hidden_count'] === 1, 'acknowledged task is hidden');
+    [$status, $response] = request('GET', '/api/attention?include_hidden=1');
+    check(in_array(7, $ids($response['data']), true), 'hidden tasks can be shown on request');
+    request('POST', '/api/tasks/7/comments', ['body' => 'Новая информация по справочнику.'], 2);
+    check(in_array(7, $ids(request('GET', '/api/attention')[1]['data']), true), 'new activity brings acknowledged task back');
+    request('POST', '/api/attention/7/ack', []);
+    check(request('DELETE', '/api/attention/7/ack')[0] === 200 && in_array(7, $ids(request('GET', '/api/attention')[1]['data']), true), 'acknowledgement can be undone');
     echo "PASS: $count API checks\n";
 } catch (Throwable $error) {
     fwrite(STDERR, $error->getMessage() . PHP_EOL . file_get_contents($directory . '/server.log'));
